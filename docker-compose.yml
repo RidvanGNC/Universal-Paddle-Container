@@ -1,0 +1,35 @@
+services:
+  paddle-ocr-cpu:
+    profiles: ["cpu"]
+    build:
+      context: .
+      dockerfile: src/Dockerfile.cpu
+    image: paddle-ocr:cpu
+    env_file:
+      - ./src/.env
+    ports:
+      - "${PORT:-8000}:${PORT:-8000}"
+    volumes:
+      - ./src/model_files:/app/src/model_files:ro
+    restart: unless-stopped
+
+  paddle-ocr-gpu:
+    profiles: ["gpu"]
+    build:
+      context: .
+      dockerfile: src/Dockerfile.gpu
+    image: paddle-ocr:gpu
+    env_file:
+      - ./src/.env
+    ports:
+      - "${PORT:-8000}:${PORT:-8000}"
+    volumes:
+      - ./src/model_files:/app/src/model_files:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped

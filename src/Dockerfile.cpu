@@ -1,0 +1,43 @@
+# Build context is the repo root (paddle-container/), because requirements/ sits alongside src/.
+# docker build -f src/Dockerfile.cpu -t paddle-ocr:cpu .
+
+# ---- builder ----
+FROM ubuntu:22.04 AS builder
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-pip python3-venv python3-distutils build-essential \
+    && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+COPY requirements/base.txt requirements/cpu.txt /tmp/requirements/
+RUN pip install --no-cache-dir -r /tmp/requirements/cpu.txt
+
+# ---- runtime ----
+FROM ubuntu:22.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-distutils libgomp1 libglib2.0-0 libsm6 libxext6 libxrender1 libgl1 curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1
+
+WORKDIR /app
+COPY src/ /app/src/
+RUN useradd -m appuser && chown -R appuser /app
+USER appuser
+
+# Works around a PaddlePaddle 3.3.1 / PaddleX CPU-inference bug where certain PP-OCRv5 models
+# (not yet in PaddleX's own MKLDNN_BLOCKLIST) crash under the default oneDNN+PIR execution path
+# with "NotImplementedError: ConvertPirAttribute2RuntimeAttribute not support [...]". Forces the
+# plain (non-mkldnn) Paddle CPU inference backend instead. Safe to remove once upstream fixes
+# this for the affected model(s); override at runtime with -e PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT=True
+# to re-test.
+ENV PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT=False
+
+ENV PORT=8000
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD sh -c 'curl -f http://localhost:${PORT:-8000}/health/live || exit 1'
+
+CMD sh -c 'uvicorn src.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1'

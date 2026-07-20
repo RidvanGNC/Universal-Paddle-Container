@@ -1,0 +1,42 @@
+# Build context is the repo root (paddle-container/), because requirements/ sits alongside src/.
+# docker build -f src/Dockerfile.gpu -t paddle-ocr:gpu .
+#
+# Base image note: paddlepaddle-gpu wheels bundle their own CUDA/cuDNN runtime libraries via pip
+# dependencies, so a full "-cudnn-runtime-" base is unnecessary - the "-base-" tag only needs to
+# supply the NVIDIA driver stub + Container Toolkit labels for `docker run --gpus all` to work.
+# If you hit CUDA library resolution errors at runtime, switch both FROM lines below to
+# nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04 instead.
+
+# ---- builder ----
+FROM nvidia/cuda:12.6.3-base-ubuntu22.04 AS builder
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-pip python3-venv python3-distutils build-essential \
+    && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+COPY requirements/base.txt requirements/gpu.txt /tmp/requirements/
+RUN pip install --no-cache-dir -r /tmp/requirements/gpu.txt \
+      --extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/
+
+# ---- runtime ----
+FROM nvidia/cuda:12.6.3-base-ubuntu22.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-distutils libgomp1 libglib2.0-0 libsm6 libxext6 libxrender1 libgl1 curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1
+
+WORKDIR /app
+COPY src/ /app/src/
+RUN useradd -m appuser && chown -R appuser /app
+USER appuser
+
+ENV PORT=8000 NVIDIA_VISIBLE_DEVICES=all NVIDIA_DRIVER_CAPABILITIES=compute,utility
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD sh -c 'curl -f http://localhost:${PORT:-8000}/health/live || exit 1'
+
+CMD sh -c 'uvicorn src.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1'
