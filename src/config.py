@@ -48,8 +48,17 @@ class Settings(BaseSettings):
     inference_timeout_seconds: float = 30.0
     model_reload_timeout_seconds: float = 120.0
 
+    # High-Performance Inference: routes capabilities through the ONNX Runtime/OpenVINO backend
+    # (confirmed ~7x CPU speedup on a real model) instead of native Paddle inference. Off by
+    # default because it requires each model to be pre-converted to ONNX before being placed
+    # under model_files/ (see tools/convert_to_onnx.py) - model_files/ is mounted read-only, so
+    # the automatic Paddle->ONNX conversion PaddleX would otherwise attempt at first use fails.
+    # A model without a pre-converted inference.onnx degrades gracefully (a clear "problem",
+    # not a crash) when this is enabled, exactly like a missing/misconfigured model directory.
+    use_hpi: bool = False
+
     max_upload_size_mb: int = 10
-    allowed_content_types: list[str] = ["image/png", "image/jpeg", "image/webp", "image/bmp"]
+    allowed_content_types: list[str] = ["image/png", "image/jpeg", "image/webp", "image/bmp", "application/pdf"]
 
     security_mode: Literal["none", "api_key"] = "none"
     api_key: str | None = None

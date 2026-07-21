@@ -106,13 +106,28 @@ class PaddleXModelEngine:
 
         logger.info(
             f"[{self._capability_label}] Loading {self._model_name!r} "
-            f"device={self._hardware.paddle_device_string!r}"
+            f"device={self._hardware.paddle_device_string!r} use_hpi={self._settings.use_hpi}"
         )
-        self._model = create_model(
-            model_name=self._model_name,
-            model_dir=model_dir,
-            device=self._hardware.paddle_device_string,
-        )
+        try:
+            self._model = create_model(
+                model_name=self._model_name,
+                model_dir=model_dir,
+                device=self._hardware.paddle_device_string,
+                use_hpip=self._settings.use_hpi,
+            )
+        except Exception as exc:
+            # Most commonly: HPI enabled but this model has no pre-converted inference.onnx, so
+            # PaddleX's automatic conversion tries (and fails) to write into the read-only
+            # model_files/ mount. Degrade this one capability rather than letting an unhandled
+            # exception crash the whole startup/reload.
+            message = f"[{self._capability_label}] Failed to construct model: {exc}"
+            if self._settings.strict_model_loading:
+                logger.error(message)
+                raise ModelNotFoundError(message) from exc
+            logger.warning(message)
+            self._model = None
+            self._load_problems.append(str(exc))
+            return
         logger.info(f"[{self._capability_label}] Loaded successfully.")
 
     def reload(self, *, model_dir_name: str | None = None, model_name: str | None = None) -> LoadResult:

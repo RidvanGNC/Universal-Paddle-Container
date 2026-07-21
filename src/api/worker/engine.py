@@ -1,5 +1,6 @@
 import dataclasses
 import gc
+import tempfile
 import time
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -7,7 +8,7 @@ from pathlib import Path
 from loguru import logger
 
 from src.api.errors import ModelNotFoundError, ModelNotLoadedError
-from src.api.schemas import OcrTextResult, PredictParams
+from src.api.schemas import OcrPageResult, OcrTextResult, PredictParams
 from src.api.worker.load_result import LoadResult
 from src.config import Settings
 from src.hardware import HardwareInfo
@@ -163,6 +164,7 @@ class PaddleOCREngine:
             "use_doc_orientation_classify": self._doc_orientation_enabled,
             "use_doc_unwarping": self._doc_unwarping_enabled,
             "use_textline_orientation": self._textline_orientation_enabled,
+            "enable_hpi": self._settings.use_hpi,
         }
         if c.det_model_name:
             kwargs["text_detection_model_name"] = c.det_model_name
@@ -181,8 +183,21 @@ class PaddleOCREngine:
             if c.textline_orientation_model_name:
                 kwargs["textline_orientation_model_name"] = c.textline_orientation_model_name
 
-        logger.info(f"Loading PaddleOCR pipeline with device={kwargs['device']!r}")
-        self._pipeline = PaddleOCR(**kwargs)
+        logger.info(f"Loading PaddleOCR pipeline with device={kwargs['device']!r} use_hpi={self._settings.use_hpi}")
+        try:
+            self._pipeline = PaddleOCR(**kwargs)
+        except Exception as exc:
+            # Most commonly: HPI enabled but det/rec has no pre-converted inference.onnx, so
+            # PaddleX's automatic conversion tries (and fails) to write into the read-only
+            # model_files/ mount. Degrade gracefully rather than crashing startup/reload.
+            message = f"Failed to construct OCR pipeline: {exc}"
+            if self._settings.strict_model_loading:
+                logger.error(message)
+                raise ModelNotFoundError(message) from exc
+            logger.warning(message)
+            self._pipeline = None
+            self._load_problems.append(str(exc))
+            return
         logger.info("PaddleOCR pipeline loaded successfully.")
 
     def reload(self, **updates) -> LoadResult:
@@ -196,41 +211,49 @@ class PaddleOCREngine:
     def unload(self) -> None:
         self._pipeline = None
 
-    def run(self, image_bytes: bytes, params: PredictParams) -> tuple[list[OcrTextResult], float]:
+    def run(
+        self, file_bytes: bytes, content_type: str, params: PredictParams
+    ) -> tuple[list[OcrPageResult], float]:
         if not self.is_loaded():
             raise ModelNotLoadedError("No PaddleOCR model is currently loaded.")
-
-        image = decode_image_to_bgr(image_bytes)
 
         # PaddleX only builds a sub-pipeline (doc-orientation/doc-unwarping/textline-orientation)
         # when its use_* flag is True at *construction* time (see load()); requesting one
         # per-call when it wasn't constructed raises AttributeError inside paddlex. Clamp to what
         # the loaded pipeline actually supports rather than trusting the request's params.
-        use_doc_orientation_classify = self._doc_orientation_enabled and params.use_doc_orientation_classify
-        use_doc_unwarping = self._doc_unwarping_enabled and params.use_doc_unwarping
-        use_textline_orientation = self._textline_orientation_enabled and params.use_textline_orientation
+        predict_kwargs = dict(
+            use_doc_orientation_classify=self._doc_orientation_enabled and params.use_doc_orientation_classify,
+            use_doc_unwarping=self._doc_unwarping_enabled and params.use_doc_unwarping,
+            use_textline_orientation=self._textline_orientation_enabled and params.use_textline_orientation,
+        )
 
         started = time.monotonic()
-        raw_results = self._pipeline.predict(
-            image,
-            use_doc_orientation_classify=use_doc_orientation_classify,
-            use_doc_unwarping=use_doc_unwarping,
-            use_textline_orientation=use_textline_orientation,
-        )
+        if content_type == "application/pdf":
+            # predict() takes a local file path for PDFs (it paginates them internally) - there's
+            # no bytes/array equivalent, unlike a single image which we decode into a numpy array
+            # ourselves below. The temp file only needs to survive this synchronous call: list()
+            # fully drains predict()'s (lazy) result generator before the `with` block exits.
+            with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp:
+                tmp.write(file_bytes)
+                tmp.flush()
+                raw_results = list(self._pipeline.predict(tmp.name, **predict_kwargs))
+        else:
+            image = decode_image_to_bgr(file_bytes)
+            raw_results = list(self._pipeline.predict(image, **predict_kwargs))
         elapsed_ms = (time.monotonic() - started) * 1000
 
-        results: list[OcrTextResult] = []
+        pages: list[OcrPageResult] = []
         for page in raw_results:
+            page_index = page.get("page_index") if hasattr(page, "get") else None
             texts = page.get("rec_texts", []) if hasattr(page, "get") else []
             scores = page.get("rec_scores", []) if hasattr(page, "get") else []
             polys = page.get("rec_polys", page.get("dt_polys", [])) if hasattr(page, "get") else []
-            for text, score, box in zip(texts, scores, polys):
-                results.append(
-                    OcrTextResult(
-                        text=text,
-                        score=float(score),
-                        box=[[float(x), float(y)] for x, y in box],
-                    )
-                )
+            results = [
+                OcrTextResult(text=text, score=float(score), box=[[float(x), float(y)] for x, y in box])
+                for text, score, box in zip(texts, scores, polys)
+            ]
+            # PaddleX returns page_index=None for non-PDF (single image) input; normalize to 0
+            # so callers always get a consistent, uniform response shape regardless of input type.
+            pages.append(OcrPageResult(page_index=page_index if page_index is not None else 0, results=results))
 
-        return results, elapsed_ms
+        return pages, elapsed_ms

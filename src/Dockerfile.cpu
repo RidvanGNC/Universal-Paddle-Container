@@ -5,18 +5,29 @@
 FROM ubuntu:22.04 AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3 python3-pip python3-venv python3-distutils build-essential \
+      python3 python3-pip python3-venv python3-distutils build-essential ca-certificates \
+      libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 COPY requirements/base.txt requirements/cpu.txt /tmp/requirements/
 RUN pip install --no-cache-dir -r /tmp/requirements/cpu.txt
 
+# High-Performance Inference (HPI) runtime - lets capabilities opt into the ONNX Runtime/OpenVINO
+# backend via use_hpip=True for a large CPU speedup (confirmed ~7x on a real PP-OCRv6 detection
+# model). Only the runtime engine is baked in here; Paddle->ONNX conversion tooling deliberately
+# is NOT installed in the image - model_files/ is mounted read-only, and conversion needs to
+# write an inference.onnx file into the model directory, which fails on a read-only mount. Models
+# that want HPI must be pre-converted with tools/convert_to_onnx.py before being placed under
+# model_files/ - see README.md.
+RUN paddlex --install hpi-cpu -y
+
 # ---- runtime ----
 FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3 python3-distutils libgomp1 libglib2.0-0 libsm6 libxext6 libxrender1 libgl1 curl \
+      python3 python3-distutils libgomp1 libglib2.0-0 libsm6 libxext6 libxrender1 libgl1 \
+      ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1

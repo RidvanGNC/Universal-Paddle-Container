@@ -38,7 +38,7 @@ results without leaving the browser.
 
 | Endpoint | Required config | Notes |
 |---|---|---|
-| `POST /predict` | `DET_MODEL_DIR_NAME`/`_NAME`, `REC_MODEL_DIR_NAME`/`_NAME` (required); `DOC_ORIENTATION_MODEL_DIR_NAME`/`_NAME`, `DOC_UNWARPING_MODEL_DIR_NAME`/`_NAME`, `TEXTLINE_ORIENTATION_MODEL_DIR_NAME`/`_NAME` (all optional, applied as pipeline preprocessing) | OCR: text detection + recognition. |
+| `POST /predict` | `DET_MODEL_DIR_NAME`/`_NAME`, `REC_MODEL_DIR_NAME`/`_NAME` (required); `DOC_ORIENTATION_MODEL_DIR_NAME`/`_NAME`, `DOC_UNWARPING_MODEL_DIR_NAME`/`_NAME`, `TEXTLINE_ORIENTATION_MODEL_DIR_NAME`/`_NAME` (all optional, applied as pipeline preprocessing) | OCR: text detection + recognition. Accepts images **or a multi-page PDF** (`application/pdf`); response is always `pages: [{page_index, results}]`, one entry per PDF page (or a single `page_index: 0` entry for a plain image) — see [PDF input](#pdf-input). |
 | `POST /table/detect-cells` | `TABLE_CELL_WIRED_MODEL_DIR_NAME`/`_NAME` or `TABLE_CELL_WIRELESS_MODEL_DIR_NAME`/`_NAME` | Multipart `file` + form field `table_type=wired\|wireless` (+ optional `threshold` override). Runs `RT-DETR-L_wired_table_cell_det` or `RT-DETR-L_wireless_table_cell_det`. |
 | `POST /table/structure` | `TABLE_STRUCTURE_MODEL_DIR_NAME`/`_NAME` | Table structure recognition (`SLANet`/`SLANet_plus`/`SLANeXt_wired`/`SLANeXt_wireless`) — returns cell `bbox`, HTML `structure` tokens, `structure_score`. |
 | `POST /layout/detect` | `LAYOUT_DETECTION_MODEL_DIR_NAME`/`_NAME` | Document region detection (title, text, table, image, formula, seal, etc. — `PP-DocLayout*`/`PicoDet*_layout_*`/`RT-DETR-H_layout_*`). Same box shape as table-cell detection. |
@@ -82,6 +82,7 @@ still just call multiple endpoints from client code.
 | `INFERENCE_TIMEOUT_SECONDS` | `30` | Max time a request waits for its result before 504 |
 | `MODEL_RELOAD_TIMEOUT_SECONDS` | `120` | Max time an admin-triggered model reload may take before 504 — separate from `INFERENCE_TIMEOUT_SECONDS` since loading weights from disk is a different latency class than a single predict call |
 | `MAX_UPLOAD_SIZE_MB` | `10` | Max accepted upload size |
+| `USE_HPI` | `false` | Route inference through the ONNX Runtime/OpenVINO backend instead of native Paddle — see [High-Performance Inference](#high-performance-inference-hpi) |
 | `SECURITY_MODE` | `none` | `none` \| `api_key` (see `src/security/auth.py`) |
 | `API_KEY` | unset | Required header value when `SECURITY_MODE=api_key` |
 
@@ -134,6 +135,72 @@ version-mismatched name (e.g. a v6 name against a paddlex build that predates v6
 log message and a 503 at that capability's endpoint — not the confusing raw `KeyError` upstream
 has been known to throw for this exact situation
 ([PaddlePaddle/PaddleX#3797](https://github.com/PaddlePaddle/PaddleX/issues/3797)).
+
+## PDF input
+
+`/predict` accepts `application/pdf` in addition to images (`image/{png,jpeg,webp,bmp}`) —
+confirmed against a real multi-page PDF: PaddleX's `predict()` takes a local file path for PDF
+input (unlike images, which this project decodes into an in-memory array), so the uploaded PDF is
+written to a short-lived temp file for the duration of the inference call and never touches
+`model_files/` or any persistent storage. The response is **always** page-grouped —
+`pages: [{page_index, results}]` — even for a single image, which comes back as one `page_index:
+0` entry. This is a uniform contract regardless of input type, not a PDF-only special case.
+
+Only `/predict` (OCR) supports PDF today; the other capabilities (table cell detection, layout
+detection, etc.) still expect a single image. Extending the same page-grouped pattern to them is
+straightforward future work, not implemented in this pass.
+
+## High-Performance Inference (HPI)
+
+Set `USE_HPI=true` to route inference through PaddleX's ONNX Runtime/OpenVINO backend instead of
+native Paddle — confirmed **~7.4x faster** on a real PP-OCRv6 detection model on CPU (0.204s →
+0.028s per call), with an **identical result shape**, so no engine/schema code needs to change to
+use it.
+
+**Models must be pre-converted to ONNX before this works — this is not optional, and the failure
+mode if you skip it is worse than "just runs unaccelerated".** Two different, both-confirmed
+behaviors depending on which engine hits it:
+
+- `PaddleXModelEngine` (table cell detection, layout detection, etc., via `create_model()`):
+  automatic Paddle→ONNX conversion is attempted at load time, and fails cleanly with `Read-only
+  file system` (the conversion tries to write `inference.onnx` *into* the model directory, which
+  this project mounts read-only on purpose) — caught by this project's own error handling and
+  surfaced as a normal `problems` entry, exactly like a missing model directory. Safe.
+- `PaddleOCREngine` (the `/predict` pipeline): confirmed via direct testing that `enable_hpi=True`
+  against a **non**-pre-converted model does **not** fail at load time — it silently falls back to
+  native Paddle inference (visible only in logs: `"Bucketed engine_config has no entry for
+  resolved engine 'hpi'"`), but that fallback path selects `run_mode: mkldnn` **without going
+  through this project's `PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT=False` mitigation** (see
+  Troubleshooting) — so it can hit the exact same unresolved oneDNN/PIR crash
+  (`NotImplementedError: ConvertPirAttribute2RuntimeAttribute...`) as a **500 on individual
+  `/predict` calls** (isolated to that request by the single-worker queue, not a container crash,
+  but still a real failure you'd hit in production). **Do not enable `USE_HPI=true` for OCR
+  det/rec models that aren't confirmed pre-converted to ONNX.**
+
+Convert with the included helper, in any separate Python environment (does not need to be inside
+this project or its container):
+
+```bash
+pip install paddlepaddle paddlex
+paddlex --install paddle2onnx -y
+python tools/convert_to_onnx.py /path/to/your/model_dir
+# now copy /path/to/your/model_dir into src/model_files/ as usual
+```
+
+For the standalone `PaddleXModelEngine`-based capabilities, a model lacking a pre-converted
+`inference.onnx` degrades gracefully at *load* time — a clear entry in that capability's
+`problems` list, not a crash, thanks to `load()` wrapping the underlying model construction call
+in a try/except (added specifically because an unhandled HPI conversion failure would otherwise
+crash the whole app at startup, or on a container hot-reload, before this was fixed). **This
+try/except does not, and cannot, protect against the OCR pipeline's different failure mode above**
+— that one only surfaces per-request, at *predict* time, not at load time.
+
+`Dockerfile.cpu` bakes in only the ONNX Runtime/OpenVINO *runtime* (`paddlex --install hpi-cpu`,
+~71MB) — the `paddle2onnx` conversion tooling deliberately stays **out** of the shipped image,
+keeping it lean, since conversion can never succeed at runtime against the read-only mount anyway.
+GPU HPI (TensorRT) is not covered by this — `USE_HPI` currently only wires into the CPU image path
+that was actually tested; GPU inference is already fast natively (see the RTX 4060 benchmarks
+earlier in this project's history) and TensorRT HPI setup is a materially bigger, untested lift.
 
 ## Admin API & UI
 
@@ -218,3 +285,12 @@ labels. If you hit CUDA library resolution errors at runtime, switch the base im
   corresponding `*_MODEL_NAME`, or that model name requires a newer `paddleocr`/`paddlex` than
   what's installed (see the PP-OCRv6/PP-OCRv5 section above). Check `pip show paddlex` inside the
   container against the model's introduction version.
+- **A capability shows a `problems` entry mentioning `Read-only file system` or `PaddlePaddle-to-
+  ONNX conversion failed` with `USE_HPI=true`:** that model wasn't pre-converted to ONNX before
+  being placed under `model_files/` — see [High-Performance Inference](#high-performance-inference-hpi).
+  Run `tools/convert_to_onnx.py` against it first.
+- **Any `pip install`/plugin install fails with `Could not find a suitable TLS CA certificate
+  bundle`:** a real gap found during this project's own HPI testing — the base `ubuntu:22.04`
+  image doesn't include the `ca-certificates` package by default, which breaks pip's HTTPS
+  entirely. Both Dockerfiles now install it explicitly; if you're customizing the image and hit
+  this, add `ca-certificates` to the apt install list before any HTTPS-dependent step.

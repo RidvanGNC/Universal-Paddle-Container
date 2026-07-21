@@ -25,20 +25,20 @@ async def predict(
     engine: PaddleOCREngine = Depends(get_ocr_engine),
     principal: Principal = Depends(get_current_principal),
 ) -> PredictResponse:
-    image_bytes = await read_validated_image(file, settings)
+    file_bytes = await read_validated_image(file, settings)
 
     loop = asyncio.get_running_loop()
     job = InferenceJob(
-        call=functools.partial(engine.run, image_bytes, PredictParams()),
+        call=functools.partial(engine.run, file_bytes, file.content_type, PredictParams()),
         future=loop.create_future(),
         timeout=settings.inference_timeout_seconds,
     )
 
-    results, elapsed_ms = await queue.submit(job)
+    pages, elapsed_ms = await queue.submit(job)
 
     return PredictResponse(
         request_id=job.request_id,
-        results=results,
+        pages=pages,
         processing_time_ms=elapsed_ms,
         device_used=hardware.paddle_device_string,
     )

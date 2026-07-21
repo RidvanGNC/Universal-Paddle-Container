@@ -15,9 +15,14 @@ class OcrTextResult(BaseModel):
     box: list[list[float]]
 
 
+class OcrPageResult(BaseModel):
+    page_index: int
+    results: list[OcrTextResult]
+
+
 class PredictResponse(BaseModel):
     request_id: str
-    results: list[OcrTextResult]
+    pages: list[OcrPageResult]
     processing_time_ms: float
     device_used: str
 
