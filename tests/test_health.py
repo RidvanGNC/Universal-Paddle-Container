@@ -15,5 +15,11 @@ def test_ready_reports_no_capabilities_configured_without_models(client):
         "table_cell_wired": False,
         "table_cell_wireless": False,
         "doc_orientation": False,
+        "table_structure": False,
+        "layout_detection": False,
+        "formula_recognition": False,
+        "seal_detection": False,
+        "doc_unwarping": False,
+        "textline_orientation": False,
     }
     assert body["hardware"]["using_device"] == "cpu"

@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>{% block title %}Paddle Container Admin{% endblock %}</title>
+    <link rel="stylesheet" href="/ui/static/style.css">
+</head>
+<body>
+    <nav class="topnav">
+        <span class="brand">paddle-container</span>
+        <a href="/ui/capabilities">Capabilities</a>
+        <a href="/ui/playground">Playground</a>
+    </nav>
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

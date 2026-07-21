@@ -5,12 +5,13 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Form, UploadFile
 
 from src.api.deps import (
+    engine_dependency,
     get_hardware_info,
     get_inference_queue,
     get_table_cell_wired_engine,
     get_table_cell_wireless_engine,
 )
-from src.api.schemas import TableCellDetectResponse
+from src.api.schemas import TableCellDetectResponse, TableStructureResponse
 from src.api.upload import read_validated_image
 from src.api.worker.job import InferenceJob
 from src.api.worker.paddlex_engine import PaddleXModelEngine
@@ -52,6 +53,37 @@ async def detect_cells(
         request_id=job.request_id,
         table_type=table_type,
         boxes=boxes,
+        processing_time_ms=elapsed_ms,
+        device_used=hardware.paddle_device_string,
+    )
+
+
+@router.post("/structure", response_model=TableStructureResponse)
+async def recognize_structure(
+    file: UploadFile,
+    settings: Settings = Depends(get_settings),
+    queue: InferenceQueue = Depends(get_inference_queue),
+    hardware: HardwareInfo = Depends(get_hardware_info),
+    engine: PaddleXModelEngine = Depends(engine_dependency("table_structure")),
+    principal: Principal = Depends(get_current_principal),
+) -> TableStructureResponse:
+    image_bytes = await read_validated_image(file, settings)
+
+    loop = asyncio.get_running_loop()
+    job = InferenceJob(
+        call=functools.partial(engine.run, image_bytes),
+        future=loop.create_future(),
+        timeout=settings.inference_timeout_seconds,
+    )
+
+    results, elapsed_ms = await queue.submit(job)
+    result = results[0]
+
+    return TableStructureResponse(
+        request_id=job.request_id,
+        bbox=result["bbox"],
+        structure=result["structure"],
+        structure_score=result["structure_score"],
         processing_time_ms=elapsed_ms,
         device_used=hardware.paddle_device_string,
     )

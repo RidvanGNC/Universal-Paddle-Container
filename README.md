@@ -2,10 +2,14 @@
 
 Self-hosted, containerized PaddleX/PaddleOCR inference API. General-purpose PaddleX capability
 host (not receipt/document-specific) — currently exposes OCR (text detection + recognition),
-table cell detection, and document orientation classification as independent endpoints, each
-independently optional. Supports two build variants — CPU and GPU (CUDA 12.6) — with runtime
-hardware auto-detection, a bounded single-worker inference queue shared across every capability,
-and model weights supplied separately at runtime (not baked into the image).
+table cell detection, table structure recognition, layout detection, formula recognition, seal
+text detection, document unwarping, and document/text-line orientation classification, each as
+an independent, independently-optional endpoint. Supports two build variants — CPU and GPU (CUDA
+12.6) — with runtime hardware auto-detection, a bounded single-worker inference queue shared
+across every capability, and model weights supplied separately at runtime (not baked into the
+image). Includes a built-in admin/test UI (`/ui/capabilities`, `/ui/playground`) for viewing and
+live-reloading each capability's model directory/name, and for uploading a test image and seeing
+results without leaving the browser.
 
 ## Quick start
 
@@ -27,16 +31,25 @@ and model weights supplied separately at runtime (not baked into the image).
 
 4. Check health: `curl http://localhost:8000/health/ready`
 5. Run a prediction: `curl -F file=@sample.png http://localhost:8000/predict`
+6. Open the admin/test UI: `http://localhost:8000/ui/capabilities` (view/reload each capability's
+   model) and `http://localhost:8000/ui/playground` (upload a test image and see results).
 
 ## Endpoints
 
 | Endpoint | Required config | Notes |
 |---|---|---|
-| `POST /predict` | `DET_MODEL_DIR_NAME`/`_NAME`, `REC_MODEL_DIR_NAME`/`_NAME` (required); `DOC_ORIENTATION_MODEL_DIR_NAME`/`_NAME` (optional, applied as pipeline preprocessing) | OCR: text detection + recognition. |
+| `POST /predict` | `DET_MODEL_DIR_NAME`/`_NAME`, `REC_MODEL_DIR_NAME`/`_NAME` (required); `DOC_ORIENTATION_MODEL_DIR_NAME`/`_NAME`, `DOC_UNWARPING_MODEL_DIR_NAME`/`_NAME`, `TEXTLINE_ORIENTATION_MODEL_DIR_NAME`/`_NAME` (all optional, applied as pipeline preprocessing) | OCR: text detection + recognition. |
 | `POST /table/detect-cells` | `TABLE_CELL_WIRED_MODEL_DIR_NAME`/`_NAME` or `TABLE_CELL_WIRELESS_MODEL_DIR_NAME`/`_NAME` | Multipart `file` + form field `table_type=wired\|wireless` (+ optional `threshold` override). Runs `RT-DETR-L_wired_table_cell_det` or `RT-DETR-L_wireless_table_cell_det`. |
+| `POST /table/structure` | `TABLE_STRUCTURE_MODEL_DIR_NAME`/`_NAME` | Table structure recognition (`SLANet`/`SLANet_plus`/`SLANeXt_wired`/`SLANeXt_wireless`) — returns cell `bbox`, HTML `structure` tokens, `structure_score`. |
+| `POST /layout/detect` | `LAYOUT_DETECTION_MODEL_DIR_NAME`/`_NAME` | Document region detection (title, text, table, image, formula, seal, etc. — `PP-DocLayout*`/`PicoDet*_layout_*`/`RT-DETR-H_layout_*`). Same box shape as table-cell detection. |
+| `POST /formula/recognize` | `FORMULA_MODEL_DIR_NAME`/`_NAME` | Formula image → LaTeX (`UniMERNet`/`PP-FormulaNet*`/`LaTeX_OCR_rec`). |
+| `POST /seal/detect` | `SEAL_DET_MODEL_DIR_NAME`/`_NAME` | Seal/stamp text region detection (`PP-OCRv4_{server,mobile}_seal_det`) — detection only; reading the seal's text is a future crop+OCR-rec combo, not implemented here. |
 | `POST /document/orientation` | `DOC_ORIENTATION_MODEL_DIR_NAME`/`_NAME` | Standalone document rotation classifier (`PP-LCNet_x1_0_doc_ori`) — same config as the optional OCR-pipeline preprocessing above, just callable directly. Returns one of `angle: "0"\|"90"\|"180"\|"270"`. |
+| `POST /document/unwarp` | `DOC_UNWARPING_MODEL_DIR_NAME`/`_NAME` | Document image rectification (`UVDoc`) — the one endpoint that returns a **PNG image** (`image/png`), not JSON; processing time/device are returned as `X-Processing-Time-Ms`/`X-Device-Used` headers instead. |
+| `POST /textline/orientation` | `TEXTLINE_ORIENTATION_MODEL_DIR_NAME`/`_NAME` | Per-text-line rotation classifier (`PP-LCNet_{x0_25,x1_0}_textline_ori`). `angle` is a plain string, not a strict `"0"/"90"/"180"/"270"` enum like `/document/orientation` — this model's real label vocabulary (e.g. possibly `"180_degree"`) isn't confirmed against real weights yet. |
 | `GET /health/live` | — | Always 200 if the process is up. Used by the Docker `HEALTHCHECK`. |
-| `GET /health/ready` (alias `/health`) | — | Always 200 once the worker loop is running; reports a `capabilities` map (`ocr`, `table_cell_wired`, `table_cell_wireless`, `doc_orientation`) so callers know which specific endpoints are currently usable. |
+| `GET /health/ready` (alias `/health`) | — | Always 200 once the worker loop is running; reports a `capabilities: dict[str,bool]` map (one entry per capability) so callers know which specific endpoints are currently usable. |
+| `GET/POST /admin/capabilities*`, `GET /ui/*` | — | See [Admin API & UI](#admin-api--ui) below. |
 
 These endpoints are deliberately separate rather than folded into one combined call, so a caller
 can compose/post-process each capability's output independently; a caller who doesn't care can
@@ -59,22 +72,36 @@ still just call multiple endpoints from client code.
 | `TABLE_CELL_WIRED_MODEL_DIR_NAME` / `TABLE_CELL_WIRED_MODEL_NAME` | unset | Optional wired-table cell detection folder name + model name (`RT-DETR-L_wired_table_cell_det`) |
 | `TABLE_CELL_WIRELESS_MODEL_DIR_NAME` / `TABLE_CELL_WIRELESS_MODEL_NAME` | unset | Optional wireless-table cell detection folder name + model name (`RT-DETR-L_wireless_table_cell_det`) |
 | `TABLE_CELL_DETECTION_THRESHOLD` | `0.3` | Default confidence threshold for `/table/detect-cells`, overridable per-request via the `threshold` form field |
+| `TABLE_STRUCTURE_MODEL_DIR_NAME` / `TABLE_STRUCTURE_MODEL_NAME` | unset | Optional table structure recognition folder name + model name (`SLANet`/`SLANet_plus`/`SLANeXt_wired`/`SLANeXt_wireless`) |
+| `LAYOUT_DETECTION_MODEL_DIR_NAME` / `LAYOUT_DETECTION_MODEL_NAME` | unset | Optional layout detection folder name + model name (`PP-DocLayout*` family) |
+| `FORMULA_MODEL_DIR_NAME` / `FORMULA_MODEL_NAME` | unset | Optional formula recognition folder name + model name (`PP-FormulaNet*`/`UniMERNet`/`LaTeX_OCR_rec`) |
+| `SEAL_DET_MODEL_DIR_NAME` / `SEAL_DET_MODEL_NAME` | unset | Optional seal text detection folder name + model name (`PP-OCRv4_{server,mobile}_seal_det`) |
+| `DOC_UNWARPING_MODEL_DIR_NAME` / `DOC_UNWARPING_MODEL_NAME` | unset | Optional doc-unwarping folder name + model name (`UVDoc`); used both as OCR-pipeline preprocessing and by the standalone `/document/unwarp` endpoint |
+| `TEXTLINE_ORIENTATION_MODEL_DIR_NAME` / `TEXTLINE_ORIENTATION_MODEL_NAME` | unset | Optional text-line orientation folder name + model name (`PP-LCNet_{x0_25,x1_0}_textline_ori`); used both as OCR-pipeline preprocessing and by the standalone `/textline/orientation` endpoint |
 | `INFERENCE_QUEUE_MAX_SIZE` | `50` | Max queued requests before returning 503 |
 | `INFERENCE_TIMEOUT_SECONDS` | `30` | Max time a request waits for its result before 504 |
+| `MODEL_RELOAD_TIMEOUT_SECONDS` | `120` | Max time an admin-triggered model reload may take before 504 — separate from `INFERENCE_TIMEOUT_SECONDS` since loading weights from disk is a different latency class than a single predict call |
 | `MAX_UPLOAD_SIZE_MB` | `10` | Max accepted upload size |
 | `SECURITY_MODE` | `none` | `none` \| `api_key` (see `src/security/auth.py`) |
 | `API_KEY` | unset | Required header value when `SECURITY_MODE=api_key` |
 
 ## Model scope
 
-Within OCR (`/predict`), only text detection and text recognition are mandatory; doc-orientation
-classification is optional (enabled automatically when `DOC_ORIENTATION_MODEL_DIR_NAME` is set).
-Doc-unwarping (`UVDoc`) and text-line orientation classification are **always disabled** in
-`engine.py` — enabling either without a locally supplied model would make PaddleOCR silently
-download weights from the internet at startup, which breaks the network-isolated-by-default
-deployment model. Table cell detection and standalone doc orientation are entirely optional
-capabilities — the container is fully functional as an OCR-only service if their weights are
-never supplied.
+Within OCR (`/predict`), only text detection and text recognition are mandatory. Doc-orientation
+classification, doc-unwarping, and text-line orientation classification are each optional pipeline
+preprocessing steps, enabled automatically (and independently of each other) whenever their
+respective `*_MODEL_DIR_NAME` is configured and resolvable — none of them auto-download weights
+from the internet; an unconfigured or misconfigured optional slot just disables that one feature
+rather than the whole pipeline (see the behavior note below). Every other capability (table cell
+detection, table structure recognition, layout detection, formula recognition, seal detection,
+standalone doc-unwarping/orientation) is entirely optional — the container is fully functional as
+an OCR-only service if none of their weights are ever supplied.
+
+**Per-slot degradation, not all-or-nothing:** a problem in `doc_orientation`/`doc_unwarping`/
+`textline_orientation`'s configuration only disables that one optional OCR feature; only a problem
+in the *required* detection or recognition slot takes down the whole `/predict` endpoint. This
+matters most when using the admin UI to test a deliberately-wrong optional-slot config — it won't
+break basic OCR while you're doing so.
 
 ## Model versions and language variants (PP-OCRv5 vs PP-OCRv6)
 
@@ -108,6 +135,34 @@ log message and a 503 at that capability's endpoint — not the confusing raw `K
 has been known to throw for this exact situation
 ([PaddlePaddle/PaddleX#3797](https://github.com/PaddlePaddle/PaddleX/issues/3797)).
 
+## Admin API & UI
+
+- `GET /admin/capabilities` — every capability's label, loaded state, current config, and any
+  load problems.
+- `GET /admin/capabilities/{name}/available-models` — subfolders currently present under
+  `MODEL_FILES_DIR` (plain directory listing — populates the UI's directory dropdown).
+- `POST /admin/capabilities/{name}/reload` — body `{"config": {...}}` (e.g.
+  `{"model_dir_name": "...", "model_name": "..."}`, or for `"ocr"` any of its 10 field names, e.g.
+  `det_model_dir_name`) — swaps that capability's model **live**, without a container restart.
+
+**Reload is a real hot-swap, not a request-time parameter tweak**: it's submitted as a normal job
+through the same single-worker inference queue every prediction goes through, so a reload can
+never race with an in-flight inference call — reload and inference are mutually exclusive by
+construction, using the same mechanism, not a separate lock. A reload that fails (bad directory,
+unrecognized model name) reports `problems` in the response and leaves that capability unloaded;
+it never crashes the process. **Reload changes are in-memory only** — they revert to `.env`
+defaults on container restart. This is intentional: a live override for comparison/testing, not a
+config-file-writing feature.
+
+The `/ui/capabilities` and `/ui/playground` pages (Jinja2 + vanilla JS, no separate frontend build)
+are a thin client of this admin API plus the regular public endpoints above — the playground page
+in particular calls `/predict`, `/table/detect-cells`, etc. directly, the same way any other API
+caller would, so there's no separate "test" code path to keep in sync with the real one.
+
+Both `/admin/*` and `/ui/*` go through the same `get_current_principal` dependency as every
+inference route, so if `SECURITY_MODE=api_key` is ever implemented (currently a documented no-op
+stub in `src/security/auth.py`), the admin surface is covered automatically.
+
 ## Concurrency model
 
 A single background worker consumes a bounded `asyncio.Queue` and runs one Paddle inference call
@@ -115,8 +170,9 @@ at a time via `run_in_executor` — **shared across every capability** (OCR, tab
 doc orientation), not one queue per model — keeping the event loop responsive to other requests
 (uploads, health checks) while inference runs. This preserves a hard guarantee: exactly one Paddle
 inference call, across the whole service, is ever in flight at once, avoiding GPU/CPU resource
-contention between capabilities. **This requires `uvicorn --workers 1`** — the Dockerfiles pin
-this. Running multiple uvicorn worker processes would each load a separate copy of every model
+contention between capabilities. Admin-triggered model reloads (see above) go through this same
+queue as ordinary reload "jobs" — so a reload and a prediction can never run concurrently either.
+**This requires `uvicorn --workers 1`** — the Dockerfiles pin this. Running multiple uvicorn worker processes would each load a separate copy of every model
 (multiplying GPU memory) and operate disconnected queues, breaking the single-worker guarantee. To
 scale throughput, run multiple **containers** behind a load balancer rather than multiple workers
 inside one container.

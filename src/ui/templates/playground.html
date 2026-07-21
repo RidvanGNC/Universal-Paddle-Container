@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Playground - paddle-container{% endblock %}
+{% block content %}
+<h1>Playground</h1>
+<p class="hint">Pick a capability, adjust its parameters, upload a test image, and see the result.</p>
+
+<div class="playground-form">
+    <label for="capability-select">Capability</label>
+    <select id="capability-select"></select>
+
+    <div id="extra-fields"></div>
+
+    <label for="file-input">Test image</label>
+    <input type="file" id="file-input" accept="image/*">
+
+    <button id="run-btn">Run</button>
+</div>
+
+<div id="result-panel">
+    <h2>Result</h2>
+    <div id="result-timing"></div>
+    <pre id="result-json" hidden></pre>
+    <img id="result-image" hidden alt="result">
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/ui/static/common.js"></script>
+<script src="/ui/static/playground.js"></script>
+{% endblock %}

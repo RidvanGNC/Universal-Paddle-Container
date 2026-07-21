@@ -31,8 +31,22 @@ class Settings(BaseSettings):
     table_cell_wireless_model_name: str | None = None
     table_cell_detection_threshold: float = 0.3
 
+    table_structure_model_dir_name: str | None = None
+    table_structure_model_name: str | None = None
+    layout_detection_model_dir_name: str | None = None
+    layout_detection_model_name: str | None = None
+    formula_model_dir_name: str | None = None
+    formula_model_name: str | None = None
+    seal_det_model_dir_name: str | None = None
+    seal_det_model_name: str | None = None
+    doc_unwarping_model_dir_name: str | None = None
+    doc_unwarping_model_name: str | None = None
+    textline_orientation_model_dir_name: str | None = None
+    textline_orientation_model_name: str | None = None
+
     inference_queue_max_size: int = 50
     inference_timeout_seconds: float = 30.0
+    model_reload_timeout_seconds: float = 120.0
 
     max_upload_size_mb: int = 10
     allowed_content_types: list[str] = ["image/png", "image/jpeg", "image/webp", "image/bmp"]

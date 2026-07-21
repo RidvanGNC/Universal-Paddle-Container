@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Capabilities - paddle-container{% endblock %}
+{% block content %}
+<h1>Capabilities</h1>
+<p class="hint">Change a capability's model directory/name and reload it live. Changes are in-memory only and revert to <code>.env</code> defaults on container restart.</p>
+<table id="capabilities-table">
+    <thead>
+        <tr>
+            <th>Capability</th>
+            <th>Loaded</th>
+            <th>Config</th>
+            <th>Problems</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr data-capability="{{ row.name }}">
+            <td>{{ row.label }}</td>
+            <td class="loaded-cell">
+                <span class="badge {{ 'ok' if row.loaded else 'off' }}">{{ 'loaded' if row.loaded else 'not loaded' }}</span>
+            </td>
+            <td class="config-cell">
+                {% for key, value in row.config.items() %}
+                <div class="config-field">
+                    <label>{{ key }}</label>
+                    <input class="config-input" data-field="{{ key }}" type="text" value="{{ value or '' }}">
+                </div>
+                {% endfor %}
+            </td>
+            <td class="problems-cell">
+                {% if row.problems %}
+                <ul>{% for p in row.problems %}<li>{{ p }}</li>{% endfor %}</ul>
+                {% endif %}
+            </td>
+            <td><button class="reload-btn">Reload</button></td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}
+{% block scripts %}
+<script src="/ui/static/common.js"></script>
+<script src="/ui/static/dashboard.js"></script>
+{% endblock %}

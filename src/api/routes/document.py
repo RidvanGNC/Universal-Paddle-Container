@@ -1,9 +1,9 @@
 import asyncio
 import functools
 
-from fastapi import APIRouter, Depends, UploadFile
+from fastapi import APIRouter, Depends, Response, UploadFile
 
-from src.api.deps import get_doc_orientation_engine, get_hardware_info, get_inference_queue
+from src.api.deps import engine_dependency, get_doc_orientation_engine, get_hardware_info, get_inference_queue
 from src.api.schemas import DocOrientationResponse
 from src.api.upload import read_validated_image
 from src.api.worker.job import InferenceJob
@@ -12,6 +12,7 @@ from src.api.worker.queue_manager import InferenceQueue
 from src.config import Settings, get_settings
 from src.hardware import HardwareInfo
 from src.security.auth import Principal, get_current_principal
+from src.utils.image_decoding import encode_bgr_to_png
 
 router = APIRouter(prefix="/document", tags=["document"])
 
@@ -43,4 +44,32 @@ async def classify_orientation(
         score=result["score"],
         processing_time_ms=elapsed_ms,
         device_used=hardware.paddle_device_string,
+    )
+
+
+@router.post("/unwarp")
+async def unwarp_document(
+    file: UploadFile,
+    settings: Settings = Depends(get_settings),
+    queue: InferenceQueue = Depends(get_inference_queue),
+    hardware: HardwareInfo = Depends(get_hardware_info),
+    engine: PaddleXModelEngine = Depends(engine_dependency("doc_unwarping")),
+    principal: Principal = Depends(get_current_principal),
+) -> Response:
+    image_bytes = await read_validated_image(file, settings)
+
+    loop = asyncio.get_running_loop()
+    job = InferenceJob(
+        call=functools.partial(engine.run, image_bytes),
+        future=loop.create_future(),
+        timeout=settings.inference_timeout_seconds,
+    )
+
+    results, elapsed_ms = await queue.submit(job)
+    png_bytes = encode_bgr_to_png(results[0])
+
+    return Response(
+        content=png_bytes,
+        media_type="image/png",
+        headers={"X-Processing-Time-Ms": str(elapsed_ms), "X-Device-Used": hardware.paddle_device_string},
     )

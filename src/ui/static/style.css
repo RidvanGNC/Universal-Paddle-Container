@@ -1,0 +1,65 @@
+:root {
+    color-scheme: light dark;
+    --fg: #1a1a1a;
+    --bg: #ffffff;
+    --border: #ddd;
+    --accent: #2563eb;
+    --ok: #16a34a;
+    --off: #9ca3af;
+    --error: #dc2626;
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --fg: #e5e5e5;
+        --bg: #121212;
+        --border: #333;
+    }
+}
+* { box-sizing: border-box; }
+body {
+    font-family: system-ui, -apple-system, sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    margin: 0;
+}
+.topnav {
+    display: flex;
+    gap: 1.5rem;
+    align-items: center;
+    padding: 0.75rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+}
+.topnav .brand { font-weight: 600; margin-right: 1rem; }
+.topnav a { color: var(--accent); text-decoration: none; }
+.topnav a:hover { text-decoration: underline; }
+main { padding: 1.5rem; max-width: 1100px; margin: 0 auto; }
+.hint { color: var(--off); font-size: 0.9rem; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+.badge { padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.8rem; }
+.badge.ok { background: var(--ok); color: white; }
+.badge.off { background: var(--off); color: white; }
+.config-field { display: flex; gap: 0.4rem; align-items: center; margin-bottom: 0.25rem; }
+.config-field label { font-size: 0.75rem; color: var(--off); min-width: 12rem; }
+.config-input, select, input[type="text"], input[type="number"] {
+    padding: 0.25rem 0.4rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--fg);
+}
+.problems-cell ul { margin: 0; padding-left: 1.1rem; color: var(--error); font-size: 0.85rem; }
+button {
+    padding: 0.4rem 0.9rem;
+    border: none;
+    border-radius: 4px;
+    background: var(--accent);
+    color: white;
+    cursor: pointer;
+}
+button:hover { opacity: 0.9; }
+.playground-form { display: flex; flex-direction: column; gap: 0.75rem; max-width: 30rem; }
+#extra-fields { display: flex; flex-direction: column; gap: 0.5rem; }
+#result-panel { margin-top: 2rem; }
+#result-json { background: rgba(128,128,128,0.1); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+#result-image { max-width: 100%; border: 1px solid var(--border); border-radius: 6px; }

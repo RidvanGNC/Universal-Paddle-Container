@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from src.api.deps import get_engines_map, get_hardware_info, get_inference_queue
-from src.api.schemas import CapabilitiesMap, HardwareSummary, HealthResponse
+from src.api.schemas import HardwareSummary, HealthResponse
 from src.api.worker.queue_manager import InferenceQueue
 from src.hardware import HardwareInfo
 
@@ -28,8 +28,8 @@ async def ready(
     # current state for table-cell/doc-orientation), not a failure. Restarting a correctly
     # running, intentionally-partial deployment would be worse than reporting it accurately.
     # 503 is reserved for genuine malfunction, which nothing here currently detects.
-    capabilities = CapabilitiesMap(**{name: engine.is_loaded() for name, engine in engines.items()})
-    status_label = "ready" if any(capabilities.model_dump().values()) else "no_capabilities_configured"
+    capabilities = {name: engine.is_loaded() for name, engine in engines.items()}
+    status_label = "ready" if any(capabilities.values()) else "no_capabilities_configured"
 
     return HealthResponse(
         status=status_label,

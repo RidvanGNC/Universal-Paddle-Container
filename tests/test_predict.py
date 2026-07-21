@@ -14,7 +14,7 @@ def test_predict_returns_503_when_model_not_loaded(client, sample_image_bytes):
 
 
 def test_predict_happy_path_with_mocked_engine(client, sample_image_bytes):
-    engine = client.app.state.ocr_engine
+    engine = client.app.state.engines["ocr"]
     fake_result = [OcrTextResult(text="hello", score=0.99, box=[[0, 0], [1, 0], [1, 1], [0, 1]])]
     engine.run = lambda image_bytes, params: (fake_result, 12.3)
 
